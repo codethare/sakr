@@ -35,21 +35,20 @@ pub fn parse_line(line: &str) -> Option<ModuleValue> {
         return None;
     }
 
-    if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
-        if let Some(object) = value.as_object() {
-            if let Some(text) = object.get("text").and_then(|text| text.as_str()) {
-                // An unusable colour falls back to the default rather than
-                // throwing the whole line away.
-                let color = object
-                    .get("color")
-                    .and_then(|color| color.as_str())
-                    .and_then(|color| Rgba::parse(color).ok());
-                return Some(ModuleValue {
-                    text: text.to_string(),
-                    color,
-                });
-            }
-        }
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(line)
+        && let Some(object) = value.as_object()
+        && let Some(text) = object.get("text").and_then(|text| text.as_str())
+    {
+        // An unusable colour falls back to the default rather than throwing the
+        // whole line away.
+        let color = object
+            .get("color")
+            .and_then(|color| color.as_str())
+            .and_then(|color| Rgba::parse(color).ok());
+        return Some(ModuleValue {
+            text: text.to_string(),
+            color,
+        });
     }
 
     Some(ModuleValue {

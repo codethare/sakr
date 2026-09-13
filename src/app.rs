@@ -243,11 +243,11 @@ impl App {
                 }
             }
             Event::Module { index, value } => {
-                if let Some(slot) = self.modules.get_mut(index) {
-                    if *slot != value {
-                        *slot = value;
-                        self.dirty = true;
-                    }
+                if let Some(slot) = self.modules.get_mut(index)
+                    && *slot != value
+                {
+                    *slot = value;
+                    self.dirty = true;
                 }
             }
             Event::CloseNotification(id) => {
