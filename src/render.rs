@@ -44,9 +44,14 @@ impl Renderer {
         Attrs::new().family(family)
     }
 
+    /// Height of one line at `size`, including leading.
+    pub fn line_height(&self, size: f32) -> f32 {
+        (size * LINE_HEIGHT_RATIO).max(1.0)
+    }
+
     /// Lay `text` out on a single, unconstrained line.
     fn layout(&mut self, text: &str, size: f32) -> Buffer {
-        let metrics = Metrics::new(size, (size * LINE_HEIGHT_RATIO).max(1.0));
+        let metrics = Metrics::new(size, self.line_height(size));
         let mut buffer = Buffer::new(&mut self.font_system, metrics);
         buffer.set_size(None, None);
         let attrs = self.describe();
