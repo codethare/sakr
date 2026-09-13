@@ -1,27 +1,28 @@
 //! Off-screen renders of the top and bottom edges.
 //!
 //! `quickbar --preview` writes these to disk so the look can be inspected
-//! without a compositor. The top edge goes through the real painter; the bottom
-//! edge still draws its own sample until the notification painter exists.
+//! without a compositor. Both edges go through the real painters, with sample
+//! content, so the samples cannot drift away from what the shell draws.
 
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use tiny_skia::Pixmap;
 
-use crate::bar::{self, ModuleValue, CORNER_RADIUS};
+use crate::bar::{self, ModuleValue};
 use crate::config::{Align, Config, Module, Rgba};
-use crate::render::{self, Renderer};
+use crate::notify::stack::{Notification, NotificationStack, Request, Urgency};
+use crate::notify::{self};
+use crate::render::Renderer;
 
 /// Width of the sample canvas. Real surfaces span the whole output, but a
 /// wide-enough sample is enough to judge margins and alignment.
 const WIDTH: u32 = 900;
 
-const CARD_WIDTH: f32 = 420.0;
-const CARD_HEIGHT: f32 = 74.0;
-const CARD_GAP: f32 = 8.0;
-const CARD_MARGIN: f32 = 16.0;
+/// Transparent space above the topmost notification card.
+const STACK_HEADROOM: f32 = 24.0;
 
 pub const TOP_FILE: &str = "preview-top.png";
 pub const BOTTOM_FILE: &str = "preview-bottom.png";
@@ -39,6 +40,26 @@ pub fn write_all(config: &Config, dir: &Path) -> io::Result<Vec<PathBuf>> {
         written.push(path);
     }
     Ok(written)
+}
+
+/// The top edge in its expanded state: border, then status bar content.
+pub fn render_top(config: &Config) -> Pixmap {
+    let (config, values) = sample_bar(config);
+    let mut canvas = Pixmap::new(WIDTH, config.border.width + config.bar.height).unwrap();
+    let mut renderer = Renderer::new(config.bar.font.clone());
+    bar::paint(&mut canvas, &config, &values, &mut renderer);
+    canvas
+}
+
+/// The bottom edge: a notification stack growing up out of the border.
+pub fn render_bottom(config: &Config) -> Pixmap {
+    let notifications = sample_notifications(config);
+    let mut renderer = Renderer::new(config.bar.font.clone());
+    let stack = notify::stack_height(config, &notifications, &renderer);
+    let height = config.border.width + (stack + STACK_HEADROOM) as u32;
+    let mut canvas = Pixmap::new(WIDTH, height).unwrap();
+    notify::paint(&mut canvas, config, &notifications, &mut renderer);
+    canvas
 }
 
 /// A copy of `config` carrying sample modules, so the real painter can be
@@ -75,96 +96,32 @@ fn sample_module(name: &str, align: Align) -> Module {
     }
 }
 
-/// The top edge in its expanded state: border, then status bar content.
-pub fn render_top(config: &Config) -> Pixmap {
-    let (config, values) = sample_bar(config);
-    let mut canvas =
-        Pixmap::new(WIDTH, config.border.width + config.bar.height).unwrap();
-    let mut renderer = Renderer::new(config.bar.font.clone());
-    bar::paint(&mut canvas, &config, &values, &mut renderer);
-    canvas
-}
-
-/// The bottom edge: a notification stack growing up out of the border.
-pub fn render_bottom(config: &Config) -> Pixmap {
-    let border = config.border.width as f32;
-    let stack_height = 2.0 * CARD_HEIGHT + CARD_GAP + CARD_MARGIN;
-    let height = config.border.width + stack_height as u32;
-    let mut canvas = Pixmap::new(WIDTH, height).unwrap();
-    let mut renderer = Renderer::new(config.bar.font.clone());
-    let size = config.bar.font_size;
-
-    let samples = [
+/// Sample notifications, built through the real queue so that ids, urgency and
+/// expiry handling are the ones the shell would produce.
+fn sample_notifications(config: &Config) -> Vec<Notification> {
+    let now = Instant::now();
+    let mut stack = NotificationStack::new();
+    for (summary, body, urgency) in [
         (
             "Battery low",
             "12% remaining. Plug in soon.",
-            config.notifications.urgent_color,
+            Urgency::Urgent,
         ),
         (
             "Build finished",
             "cargo build --release in 42s",
-            config.bar.foreground,
+            Urgency::Normal,
         ),
-    ];
-
-    for (index, (summary, body, accent)) in samples.iter().enumerate() {
-        let y = height as f32
-            - border
-            - CARD_MARGIN
-            - (index as f32 + 1.0) * CARD_HEIGHT
-            - index as f32 * CARD_GAP;
-        let x = WIDTH as f32 - CARD_WIDTH - CARD_MARGIN;
-
-        render::fill_round_rect(
-            &mut canvas,
-            x,
-            y,
-            CARD_WIDTH,
-            CARD_HEIGHT,
-            CORNER_RADIUS,
-            config.notifications.background,
-        );
-        render::fill_round_rect(
-            &mut canvas,
-            x,
-            y + 12.0,
-            3.0,
-            CARD_HEIGHT - 24.0,
-            1.5,
-            *accent,
-        );
-        renderer.draw_text(
-            &mut canvas,
-            summary,
-            x + 16.0,
-            y + 10.0,
-            size,
-            config.notifications.text_color,
-        );
-        renderer.draw_text(
-            &mut canvas,
-            body,
-            x + 16.0,
-            y + 34.0,
-            size - 1.5,
-            Rgba {
-                a: 0xaa,
-                ..config.notifications.text_color
-            },
-        );
+    ] {
+        let request = Request {
+            summary: summary.to_string(),
+            body: body.to_string(),
+            urgency,
+            ..Request::default()
+        };
+        stack.push(request, &config.notifications, now);
     }
-
-    // Drawn last so it is never separated from the content above it.
-    render::fill_rect(
-        &mut canvas,
-        0.0,
-        height as f32 - border,
-        WIDTH as f32,
-        border,
-        config.border.color,
-    );
-
-    canvas
+    stack.notifications().to_vec()
 }
 
 #[cfg(test)]
@@ -232,3 +189,4 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 }
+

@@ -8,7 +8,7 @@
 use tiny_skia::Pixmap;
 
 use crate::config::{Align, Config, Rgba};
-use crate::render::{self, Renderer};
+use crate::render::{self, Renderer, CORNER_RADIUS};
 
 /// Gap between the content edge and the outermost module.
 pub const PADDING: f32 = 12.0;
@@ -18,9 +18,6 @@ const MODULE_GAP: f32 = 12.0;
 
 /// Minimum gap between two segments.
 const SEGMENT_GAP: f32 = 16.0;
-
-/// Corner radius used where content meets the desktop.
-pub const CORNER_RADIUS: f32 = 10.0;
 
 /// One module's current content.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -101,7 +98,7 @@ pub fn layout(
             if remaining <= gap {
                 break;
             }
-            let text = shorten(segment_text(values, index), remaining - gap, size, renderer);
+            let text = renderer.shorten(segment_text(values, index), remaining - gap, size);
             let width = renderer.measure_text(&text, size).0;
             if width <= 0.0 {
                 continue;
@@ -156,37 +153,6 @@ fn slot_of(align: Align) -> usize {
 
 fn segment_text(values: &[ModuleValue], index: usize) -> &str {
     values.get(index).map_or("", |value| value.text.as_str())
-}
-
-/// Cut `text` down to `budget` pixels, marking the cut with an ellipsis.
-fn shorten(text: &str, budget: f32, size: f32, renderer: &mut Renderer) -> String {
-    if budget <= 0.0 || text.is_empty() {
-        return String::new();
-    }
-    if renderer.measure_text(text, size).0 <= budget {
-        return text.to_string();
-    }
-
-    let marker = '…';
-    let marker_width = renderer.measure_text(&marker.to_string(), size).0;
-    if marker_width > budget {
-        return String::new();
-    }
-
-    // ponytail: one measurement per character; module text is short enough that
-    // a binary search over graphemes would not pay for itself.
-    let keep = budget - marker_width;
-    let mut kept = String::new();
-    for character in text.chars() {
-        let mut candidate = kept.clone();
-        candidate.push(character);
-        if renderer.measure_text(&candidate, size).0 > keep {
-            break;
-        }
-        kept = candidate;
-    }
-    kept.push(marker);
-    kept
 }
 
 /// Paint the top edge: border strip, background, then the modules.
@@ -391,23 +357,6 @@ mod tests {
                 module.x + width
             );
         }
-    }
-
-    #[test]
-    fn shortening_keeps_text_that_already_fits() {
-        let mut renderer = Renderer::new(None);
-        assert_eq!(shorten("clock", 500.0, 13.0, &mut renderer), "clock");
-        assert_eq!(shorten("clock", 0.0, 13.0, &mut renderer), "");
-    }
-
-    #[test]
-    fn shortening_adds_an_ellipsis_when_it_has_to_cut() {
-        let mut renderer = Renderer::new(None);
-        let shortened = shorten("a very long module value", 40.0, 13.0, &mut renderer);
-
-        assert!(shortened.ends_with('…'), "got {shortened}");
-        assert!(shortened.len() < "a very long module value".len());
-        assert!(width_of(&shortened, &mut renderer) <= 40.0);
     }
 
     fn pixel(pixmap: &Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {

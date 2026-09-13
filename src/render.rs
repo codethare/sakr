@@ -15,6 +15,9 @@ use crate::config::Rgba;
 /// Line height as a multiple of the font size, applied to every layout.
 const LINE_HEIGHT_RATIO: f32 = 1.4;
 
+/// Corner radius used where a panel meets the desktop.
+pub const CORNER_RADIUS: f32 = 10.0;
+
 /// Owns the font database and the glyph rasterization cache.
 ///
 /// Build one at startup and reuse it for every frame: constructing a
@@ -76,6 +79,39 @@ impl Renderer {
             height = height.max(run.line_top + run.line_height);
         }
         (width, height)
+    }
+
+    /// Shorten `text` to fit `budget` pixels, marking the cut with an ellipsis.
+    ///
+    /// Returns an empty string when not even the ellipsis fits.
+    pub fn shorten(&mut self, text: &str, budget: f32, size: f32) -> String {
+        if budget <= 0.0 || text.is_empty() {
+            return String::new();
+        }
+        if self.measure_text(text, size).0 <= budget {
+            return text.to_string();
+        }
+
+        let marker = '…';
+        let marker_width = self.measure_text(&marker.to_string(), size).0;
+        if marker_width > budget {
+            return String::new();
+        }
+
+        // ponytail: one measurement per character. Module and notification text is
+        // short enough that a binary search over graphemes would not pay for itself.
+        let keep = budget - marker_width;
+        let mut kept = String::new();
+        for character in text.chars() {
+            let mut candidate = kept.clone();
+            candidate.push(character);
+            if self.measure_text(&candidate, size).0 > keep {
+                break;
+            }
+            kept = candidate;
+        }
+        kept.push(marker);
+        kept
     }
 
     /// Draw `text` with its top-left corner at `(x, y)`.
@@ -361,6 +397,23 @@ mod tests {
         let mut canvas = pixmap(20, 20);
         renderer.draw_text(&mut canvas, "", 0.0, 0.0, 14.0, WHITE);
         assert_eq!(painted_pixels(&canvas), 0);
+    }
+
+    #[test]
+    fn shortening_keeps_text_that_already_fits() {
+        let mut renderer = Renderer::new(None);
+        assert_eq!(renderer.shorten("clock", 500.0, 13.0), "clock");
+        assert_eq!(renderer.shorten("clock", 0.0, 13.0), "");
+    }
+
+    #[test]
+    fn shortening_adds_an_ellipsis_when_it_has_to_cut() {
+        let mut renderer = Renderer::new(None);
+        let shortened = renderer.shorten("a very long module value", 40.0, 13.0);
+
+        assert!(shortened.ends_with('…'), "got {shortened}");
+        assert!(shortened.len() < "a very long module value".len());
+        assert!(renderer.measure_text(&shortened, 13.0).0 <= 40.0);
     }
 
     #[test]
