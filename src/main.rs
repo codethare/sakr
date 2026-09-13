@@ -28,8 +28,26 @@ fn main() -> ExitCode {
 }
 
 fn run_service() -> ExitCode {
-    eprintln!("quickbar: service mode is not implemented yet");
-    ExitCode::FAILURE
+    let config = match config::load() {
+        Ok((config, warnings)) => {
+            for warning in warnings {
+                eprintln!("quickbar: {warning}");
+            }
+            config
+        }
+        Err(error) => {
+            eprintln!("quickbar: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    match wl::run(config) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("quickbar: {error}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 /// Send a command to a running service.

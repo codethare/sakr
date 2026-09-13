@@ -55,6 +55,71 @@ fn card_height(config: &Config, notification: &Notification, renderer: &Renderer
     height
 }
 
+/// Where one card sits on the surface.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Card {
+    /// The notification's id, for click handling.
+    pub id: u32,
+    /// Index into the notification list this was laid out from.
+    pub index: usize,
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
+/// Lay the cards out on a surface of the given size.
+///
+/// The newest sits nearest the border and the stack grows upward from there. A
+/// card that would not fit is left out entirely rather than drawn half off the
+/// top. Painting and click handling both go through this, so they cannot
+/// disagree about where a card is.
+pub fn layout(
+    config: &Config,
+    notifications: &[Notification],
+    renderer: &Renderer,
+    surface: (u32, u32),
+) -> Vec<Card> {
+    let width = surface.0 as f32;
+    let height = surface.1 as f32;
+    let border = config.border.width as f32;
+    let card_width = CARD_WIDTH.min((width - 2.0 * STACK_MARGIN).max(0.0));
+    let x = width - STACK_MARGIN - card_width;
+
+    let mut cards: Vec<Card> = Vec::new();
+    let mut bottom = height - border;
+    for (index, notification) in notifications.iter().enumerate().rev() {
+        let height = card_height(config, notification, renderer);
+        if bottom - height < 0.0 {
+            break;
+        }
+        cards.push(Card {
+            id: notification.id,
+            index,
+            x,
+            y: bottom - height,
+            width: card_width,
+            height,
+        });
+        bottom -= height + CARD_GAP;
+    }
+    // Oldest first, matching the order they were pushed in.
+    cards.reverse();
+    cards
+}
+
+/// The notification under a point, if any.
+///
+pub fn hit(cards: &[Card], x: f32, y: f32) -> Option<u32> {
+    cards
+        .iter()
+        .rev()
+        .find(|card| {
+            x >= card.x && x < card.x + card.width && y >= card.y && y < card.y + card.height
+        })
+        .map(|card| card.id)
+}
+
 /// Paint the bottom edge: the notification stack, then the border strip.
 ///
 /// Cards are placed from the border upward, so the newest is nearest the border
@@ -69,18 +134,9 @@ pub fn paint(
     let width = pixmap.width() as f32;
     let height = pixmap.height() as f32;
     let border = config.border.width as f32;
-    let card_width = CARD_WIDTH.min((width - 2.0 * STACK_MARGIN).max(0.0));
-    let x = width - STACK_MARGIN - card_width;
 
-    let mut bottom = height - border;
-    for notification in notifications.iter().rev() {
-        let card = card_height(config, notification, renderer);
-        if bottom - card < 0.0 {
-            break;
-        }
-        let y = bottom - card;
-        draw_card(pixmap, config, notification, x, y, card_width, card, renderer);
-        bottom = y - CARD_GAP;
+    for card in layout(config, notifications, renderer, (pixmap.width(), pixmap.height())) {
+        draw_card(pixmap, config, &notifications[card.index], &card, renderer);
     }
 
     // Drawn last so it is never separated from the content above it.
@@ -94,17 +150,14 @@ pub fn paint(
     );
 }
 
-#[allow(clippy::too_many_arguments)]
 fn draw_card(
     pixmap: &mut Pixmap,
     config: &Config,
     notification: &Notification,
-    x: f32,
-    y: f32,
-    width: f32,
-    height: f32,
+    card: &Card,
     renderer: &mut Renderer,
 ) {
+    let Card { x, y, width, height, .. } = *card;
     render::fill_round_rect(
         pixmap,
         x,
@@ -166,9 +219,9 @@ mod tests {
     use super::*;
     use stack::Urgency;
 
-    const WIDTH: u32 = 600;
+    pub(super) const WIDTH: u32 = 600;
 
-    fn item(summary: &str, body: &str, urgency: Urgency) -> Notification {
+    pub(super) fn item(summary: &str, body: &str, urgency: Urgency) -> Notification {
         Notification {
             id: 1,
             summary: summary.to_string(),
@@ -178,7 +231,7 @@ mod tests {
         }
     }
 
-    fn canvas(height: u32) -> Pixmap {
+    pub(super) fn canvas(height: u32) -> Pixmap {
         Pixmap::new(WIDTH, height).unwrap()
     }
 
@@ -463,5 +516,83 @@ mod tests {
             (stack_height(&config, &[card.clone(), card], &renderer) - (2.0 * one + CARD_GAP)).abs()
                 < 0.01
         );
+    }
+}
+
+#[cfg(test)]
+mod hit_tests {
+    use super::tests::{canvas, item};
+    use super::*;
+    use crate::notify::stack::Urgency;
+
+    fn two(config: &Config, renderer: &Renderer) -> Vec<Card> {
+        let mut older = item("older", "body", Urgency::Normal);
+        older.id = 7;
+        let mut newer = item("newer", "", Urgency::Normal);
+        newer.id = 8;
+        let notifications = vec![older, newer];
+        layout(config, &notifications, renderer, (600, 200))
+    }
+
+    #[test]
+    fn cards_do_not_overlap_and_the_newest_is_lowest() {
+        let config = Config::default();
+        let renderer = Renderer::new(None);
+        let cards = two(&config, &renderer);
+
+        assert_eq!(cards.len(), 2);
+        assert_eq!(cards[1].id, 8, "the newest card is last, nearest the border");
+        assert!(
+            cards[1].y > cards[0].y,
+            "the newest card should be lower on the surface: {:?} vs {:?}",
+            cards[0],
+            cards[1]
+        );
+        assert!(
+            cards[0].y + cards[0].height <= cards[1].y,
+            "cards must not overlap: {:?} vs {:?}",
+            cards[0],
+            cards[1]
+        );
+    }
+
+    #[test]
+    fn a_click_inside_a_card_finds_it() {
+        let config = Config::default();
+        let renderer = Renderer::new(None);
+        let cards = two(&config, &renderer);
+        let card = cards[0];
+
+        let centre = (
+            card.x + card.width / 2.0,
+            card.y + card.height / 2.0,
+        );
+        assert_eq!(hit(&cards, centre.0, centre.1), Some(card.id));
+    }
+
+    #[test]
+    fn a_click_outside_every_card_finds_nothing() {
+        let config = Config::default();
+        let renderer = Renderer::new(None);
+        let cards = two(&config, &renderer);
+
+        assert_eq!(hit(&cards, 4.0, 4.0), None, "left of the stack");
+        assert_eq!(hit(&cards, 599.0, 4.0), None, "above the stack");
+    }
+
+    #[test]
+    fn the_layout_matches_what_gets_painted() {
+        // The same layout drives painting, so a card's rectangle must sit on
+        // pixels that are actually part of that card.
+        let config = Config::default();
+        let mut renderer = Renderer::new(None);
+        let notifications = vec![item("only", "one", Urgency::Normal)];
+        let height = config.border.width + 200;
+        let mut canvas = canvas(height);
+        paint(&mut canvas, &config, &notifications, &mut renderer);
+
+        let card = layout(&config, &notifications, &renderer, (600, height))[0];
+        let inside = canvas.pixels()[((card.y as u32 + 4) * 600 + card.x as u32 + 4) as usize];
+        assert!(inside.alpha() > 0, "the card's own rectangle should be painted");
     }
 }

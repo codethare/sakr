@@ -83,11 +83,9 @@ impl Modules {
     }
 
     /// Stop every module process and wait for its thread to finish.
-    pub fn stop(mut self) {
-        self.shutdown();
-    }
-
-    fn shutdown(&mut self) {
+    ///
+    /// Idempotent: dropping the modules does the same thing.
+    pub fn stop(&mut self) {
         for worker in self.workers.drain(..) {
             worker.stop();
         }
@@ -96,7 +94,7 @@ impl Modules {
 
 impl Drop for Modules {
     fn drop(&mut self) {
-        self.shutdown();
+        self.stop();
     }
 }
 
@@ -324,7 +322,7 @@ mod tests {
     #[test]
     fn an_interval_module_reports_its_last_line() {
         let config = config_with("printf 'one\\ntwo\\n'", false);
-        let (modules, updates) = run(&config);
+        let (mut modules, updates) = run(&config);
 
         let (index, value) = updates
             .recv_timeout(Duration::from_secs(10))
@@ -338,7 +336,7 @@ mod tests {
     #[test]
     fn an_interval_module_with_no_output_reports_nothing() {
         let config = config_with("true", false);
-        let (modules, updates) = run(&config);
+        let (mut modules, updates) = run(&config);
 
         assert!(
             updates.recv_timeout(Duration::from_millis(1500)).is_err(),
@@ -351,7 +349,7 @@ mod tests {
     #[test]
     fn a_stream_module_reports_every_line() {
         let config = config_with("printf 'first\\n'; sleep 30", true);
-        let (modules, updates) = run(&config);
+        let (mut modules, updates) = run(&config);
 
         let (_, first) = updates.recv_timeout(Duration::from_secs(10)).expect("first line");
         assert_eq!(first.text, "first");
@@ -362,7 +360,7 @@ mod tests {
     #[test]
     fn a_stream_that_keeps_printing_is_read_line_by_line() {
         let config = config_with("printf 'a\\nb\\nc\\n'; sleep 30", true);
-        let (modules, updates) = run(&config);
+        let (mut modules, updates) = run(&config);
 
         let mut seen = Vec::new();
         while seen.len() < 3 {
@@ -378,7 +376,7 @@ mod tests {
     fn a_stream_that_exits_is_restarted_after_the_delay() {
         // Exits immediately, so the only way to see two reports is a restart.
         let config = config_with("printf 'tick\\n'", true);
-        let (modules, updates) = run(&config);
+        let (mut modules, updates) = run(&config);
 
         updates.recv_timeout(Duration::from_secs(10)).expect("first run");
         let started = Instant::now();
@@ -395,7 +393,7 @@ mod tests {
     #[test]
     fn a_missing_command_is_reported_and_survived() {
         let config = config_with("/nonexistent/quickbar-test-command", false);
-        let (modules, updates) = run(&config);
+        let (mut modules, updates) = run(&config);
 
         assert!(
             updates.recv_timeout(Duration::from_millis(1500)).is_err(),
@@ -408,7 +406,7 @@ mod tests {
     #[test]
     fn stopping_joins_a_stream_that_is_still_running() {
         let config = config_with("sleep 300", true);
-        let (modules, _updates) = run(&config);
+        let (mut modules, _updates) = run(&config);
         thread::sleep(Duration::from_millis(200));
 
         let started = Instant::now();
@@ -438,7 +436,7 @@ mod tests {
                 ..Module::default()
             },
         ];
-        let (modules, updates) = run(&config);
+        let (mut modules, updates) = run(&config);
 
         let mut seen = Vec::new();
         while seen.len() < 2 {
@@ -454,7 +452,7 @@ mod tests {
     #[test]
     fn no_modules_means_no_threads() {
         let config = Config::default();
-        let (modules, _updates) = run(&config);
+        let (mut modules, _updates) = run(&config);
 
         assert!(modules.is_empty());
         modules.stop();

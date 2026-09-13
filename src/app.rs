@@ -136,6 +136,10 @@ pub enum Event {
 /// Anything the shell has to do beyond repainting.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Update {
+    /// The status bar moved: only its own edge needs repainting for this. Kept
+    /// apart from the global dirty flag so a slide does not repaint the whole
+    /// screen sixty times a second.
+    pub bar_moved: bool,
     /// Notifications that left the queue, with the reason to report for each.
     pub closed: Vec<(u32, ClosedReason)>,
     pub reload: bool,
@@ -168,6 +172,15 @@ impl App {
         &self.config
     }
 
+    /// Adopt a new configuration without losing what is on screen: the
+    /// notification stack and the bar's position survive a reload.
+    pub fn reload(&mut self, config: Config) {
+        self.config = config;
+        self.modules
+            .resize(self.config.bar.module.len(), ModuleValue::default());
+        self.dirty = true;
+    }
+
     pub fn modules(&self) -> &[ModuleValue] {
         &self.modules
     }
@@ -179,6 +192,12 @@ impl App {
     /// How far the status bar is out: 0.0 collapsed, 1.0 fully shown.
     pub fn bar_progress(&self) -> f32 {
         self.bar.progress
+    }
+
+    /// True while the bar is moving, and so needs frames rather than just the
+    /// next state change.
+    pub fn is_sliding(&self) -> bool {
+        self.bar.animation.is_some()
     }
 
     pub fn take_dirty(&mut self) -> bool {
@@ -202,11 +221,14 @@ impl App {
     /// Move time-driven state forward: queued transitions, the slide, and
     /// notification expiry.
     pub fn advance(&mut self, now: Instant) -> Update {
-        if self.bar.step(now) {
+        let bar_moved = self.bar.step(now);
+        let closed = self.notifications.expire(now);
+        if !closed.is_empty() {
             self.dirty = true;
         }
         Update {
-            closed: self.notifications.expire(now),
+            bar_moved,
+            closed,
             ..Update::default()
         }
     }

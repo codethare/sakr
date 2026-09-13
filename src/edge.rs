@@ -3,8 +3,16 @@
 //! The geometry is pure, so every anchor, size and input rectangle is testable
 //! without a compositor.
 
-use smithay_client_toolkit::shell::wlr_layer::Anchor;
+use smithay_client_toolkit::{
+    compositor::{CompositorState, Region},
+    shell::{
+        wlr_layer::{Anchor, LayerSurface},
+        WaylandSurface,
+    },
+    shm::slot::SlotPool,
+};
 use tiny_skia::Pixmap;
+use wayland_client::protocol::{wl_output, wl_shm};
 
 use crate::bar::{self, ModuleValue};
 use crate::config::Config;
@@ -139,6 +147,121 @@ pub fn paint(
             config.border.color,
         ),
     }
+}
+
+/// One edge's layer surface on one output.
+pub struct Surface {
+    pub edge: Edge,
+    pub output: wl_output::WlOutput,
+    pub layer: LayerSurface,
+    pool: SlotPool,
+    /// What the compositor configured. Zero until it has, and fixed afterwards.
+    size: (u32, u32),
+    configured: bool,
+}
+
+impl Surface {
+    pub fn new(
+        edge: Edge,
+        output: wl_output::WlOutput,
+        layer: LayerSurface,
+        pool: SlotPool,
+    ) -> Self {
+        Self {
+            edge,
+            output,
+            layer,
+            pool,
+            size: (0, 0),
+            configured: false,
+        }
+    }
+
+    /// Remember the size the compositor chose.
+    ///
+    /// It stays fixed for the life of the surface: collapsing the bar changes
+    /// what is painted and what accepts input, never the geometry.
+    pub fn configure(&mut self, width: u32, height: u32) {
+        self.size = (width, height);
+        self.configured = true;
+    }
+
+    pub fn size(&self) -> (u32, u32) {
+        self.size
+    }
+
+    /// Paint this edge, submit it, and update what accepts pointer input.
+    pub fn draw(
+        &mut self,
+        compositor: &CompositorState,
+        config: &Config,
+        content: &Content,
+        renderer: &mut Renderer,
+    ) -> Result<(), String> {
+        if !self.configured {
+            return Ok(());
+        }
+        let (width, height) = self.size;
+        if width == 0 || height == 0 {
+            return Ok(());
+        }
+
+        let stride = (width * 4) as i32;
+        let (buffer, canvas) = self
+            .pool
+            .create_buffer(
+                width as i32,
+                height as i32,
+                stride,
+                wl_shm::Format::Argb8888,
+            )
+            .map_err(|error| failure(self.edge, format_args!("cannot create a buffer: {error}")))?;
+
+        let mut pixmap = Pixmap::new(width, height)
+            .ok_or_else(|| failure(self.edge, format_args!("cannot allocate a {width}x{height} canvas")))?;
+        paint(self.edge, &mut pixmap, config, content, renderer);
+        canvas.copy_from_slice(pixmap.data());
+
+        self.set_input_region(compositor, config, content, renderer)?;
+
+        let surface = self.layer.wl_surface();
+        surface.damage_buffer(0, 0, width as i32, height as i32);
+        buffer
+            .attach_to(surface)
+            .map_err(|error| failure(self.edge, format_args!("cannot attach a buffer: {error}")))?;
+        self.layer.commit();
+        Ok(())
+    }
+
+    /// Tell the compositor which part of the surface accepts the pointer.
+    ///
+    /// The region is snapshotted when the surface is committed, so building a
+    /// fresh one each time is both correct and the simplest way to change its
+    /// shape as the bar slides.
+    fn set_input_region(
+        &self,
+        compositor: &CompositorState,
+        config: &Config,
+        content: &Content,
+        renderer: &Renderer,
+    ) -> Result<(), String> {
+        let (x, y, width, height) = input_rect(
+            self.edge,
+            self.size,
+            config.border.width,
+            content.height(self.edge, config, renderer),
+            content.bar_progress,
+        );
+        let region = Region::new(compositor)
+            .map_err(|error| failure(self.edge, format_args!("cannot create an input region: {error}")))?;
+        region.add(x, y, width, height);
+        self.layer.set_input_region(Some(region.wl_region()));
+        Ok(())
+    }
+}
+
+fn failure(edge: Edge, message: std::fmt::Arguments<'_>) -> String {
+    format!("edge {edge:?}: {message}")
 }
 
 #[cfg(test)]
