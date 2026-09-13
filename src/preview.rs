@@ -47,7 +47,7 @@ pub fn render_top(config: &Config) -> Pixmap {
     let (config, values) = sample_bar(config);
     let mut canvas = Pixmap::new(WIDTH, config.border.width + config.bar.height).unwrap();
     let mut renderer = Renderer::new(config.bar.font.clone());
-    bar::paint(&mut canvas, &config, &values, &mut renderer);
+    bar::paint(&mut canvas, &config, &values, &mut renderer, 1.0);
     canvas
 }
 

@@ -160,38 +160,61 @@ fn segment_text(values: &[ModuleValue], index: usize) -> &str {
 /// The border and the content are drawn into one buffer, so the border strip
 /// squares off the top of the rounded content block and the two can never drift
 /// apart.
-pub fn paint(pixmap: &mut Pixmap, config: &Config, values: &[ModuleValue], renderer: &mut Renderer) {
+///
+/// `progress` is the slide: 0.0 leaves only the border, 1.0 has the bar fully
+/// out. The block travels up and down as a rigid piece and fades with it; the
+/// border never moves and never fades.
+pub fn paint(
+    pixmap: &mut Pixmap,
+    config: &Config,
+    values: &[ModuleValue],
+    renderer: &mut Renderer,
+    progress: f32,
+) {
+    let progress = progress.clamp(0.0, 1.0);
     let width = pixmap.width() as f32;
-    let height = pixmap.height() as f32;
     let border = config.border.width as f32;
+    let content_height = config.bar.height as f32;
+    // At rest the block sits exactly in the content area; collapsed it is a whole
+    // bar-height further up, hidden behind the border.
+    let top = border - (1.0 - progress) * content_height;
+    let background = faded(config.bar.background, progress);
 
-    // One rounded block, squared off above the bottom radius and then again by the
-    // border strip. Without the middle step the rounded top corners would leave a
-    // transparent notch just below the border, where the arc is outside the block.
-    render::fill_round_rect(
+    // One block, rounded only where it meets the desktop and square where it
+    // meets the border. Drawing it as a rounded rectangle plus a second rectangle
+    // to square the top would blend the overlap twice and leave a strip that is
+    // more opaque than the rest of the bar.
+    render::fill_rect_round_bottom(
         pixmap,
         0.0,
-        0.0,
+        top,
         width,
-        height,
+        content_height,
         CORNER_RADIUS,
-        config.bar.background,
-    );
-    render::fill_rect(
-        pixmap,
-        0.0,
-        0.0,
-        width,
-        (height - CORNER_RADIUS).max(0.0),
-        config.bar.background,
+        background,
     );
     render::fill_rect(pixmap, 0.0, 0.0, width, border, config.border.color);
 
     let size = config.bar.font_size;
     let line = renderer.line_height(size);
-    let top = border + ((config.bar.height as f32 - line) / 2.0).max(0.0);
+    let text_top = top + ((content_height - line) / 2.0).max(0.0);
     for module in layout(width, config, values, renderer) {
-        renderer.draw_text(pixmap, &module.text, module.x, top, size, module.color);
+        renderer.draw_text(
+            pixmap,
+            &module.text,
+            module.x,
+            text_top,
+            size,
+            faded(module.color, progress),
+        );
+    }
+}
+
+/// Scale a colour's alpha, so content fades as it slides.
+fn faded(color: Rgba, progress: f32) -> Rgba {
+    Rgba {
+        a: (f32::from(color.a) * progress).round().clamp(0.0, 255.0) as u8,
+        ..color
     }
 }
 
@@ -359,6 +382,75 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_collapsed_bar_paints_only_the_border() {
+        let config = Config::default();
+        let mut canvas = Pixmap::new(400, config.border.width + config.bar.height).unwrap();
+        let mut renderer = Renderer::new(None);
+        paint(&mut canvas, &config, &[], &mut renderer, 0.0);
+
+        let border = config.border.color;
+        let expected = (border.r, border.g, border.b, border.a);
+        for y in 0..config.border.width {
+            assert_eq!(pixel(&canvas, 200, y), expected, "border row {y}");
+        }
+        for y in config.border.width..canvas.height() {
+            for x in 0..canvas.width() {
+                assert_eq!(
+                    pixel(&canvas, x, y).3,
+                    0,
+                    "collapsed content must be invisible, alpha at ({x}, {y})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_bar_mid_slide_is_faded_and_still_moving() {
+        let config = Config::default();
+        let mut canvas = Pixmap::new(400, config.border.width + config.bar.height).unwrap();
+        let mut renderer = Renderer::new(None);
+        paint(&mut canvas, &config, &[], &mut renderer, 0.5);
+
+        let just_below = config.border.width;
+        let alpha = pixel(&canvas, 200, just_below).3;
+        assert!(
+            alpha > 0 && alpha < config.bar.background.a,
+            "mid-slide content should be faded, alpha was {alpha}"
+        );
+
+        let bottom = canvas.height() - 1;
+        assert_eq!(
+            pixel(&canvas, 200, bottom).3,
+            0,
+            "the block has not arrived at the bottom yet"
+        );
+        assert_eq!(
+            pixel(&canvas, 200, 0),
+            {
+                let border = config.border.color;
+                (border.r, border.g, border.b, border.a)
+            },
+            "the border never moves or fades"
+        );
+    }
+
+    #[test]
+    fn a_bar_that_is_fully_out_is_opaque() {
+        let config = Config::default();
+        let mut canvas = Pixmap::new(400, config.border.width + config.bar.height).unwrap();
+        let mut renderer = Renderer::new(None);
+        paint(&mut canvas, &config, &[], &mut renderer, 1.0);
+
+        let just_below = config.border.width;
+        assert_eq!(
+            pixel(&canvas, 200, just_below).3,
+            config.bar.background.a,
+            "content should be fully opaque once it is out"
+        );
+        assert_eq!(pixel(&canvas, 200, canvas.height() - 1).3, config.bar.background.a);
+    }
+
     fn pixel(pixmap: &Pixmap, x: u32, y: u32) -> (u8, u8, u8, u8) {
         let px = pixmap.pixels()[(y * pixmap.width() + x) as usize];
         (px.red(), px.green(), px.blue(), px.alpha())
@@ -369,7 +461,7 @@ mod tests {
         let config = Config::default();
         let mut canvas = Pixmap::new(400, config.border.width + config.bar.height).unwrap();
         let mut renderer = Renderer::new(None);
-        paint(&mut canvas, &config, &[], &mut renderer);
+        paint(&mut canvas, &config, &[], &mut renderer, 1.0);
 
         let border = config.border.color;
         let expected = (border.r, border.g, border.b, border.a);
@@ -391,7 +483,7 @@ mod tests {
         let config = Config::default();
         let mut canvas = Pixmap::new(400, config.border.width + config.bar.height).unwrap();
         let mut renderer = Renderer::new(None);
-        paint(&mut canvas, &config, &[], &mut renderer);
+        paint(&mut canvas, &config, &[], &mut renderer, 1.0);
 
         // The rounded top corners must be squared off: every pixel of the content
         // area is opaque, including the ones diagonally below the border ends.
@@ -415,7 +507,7 @@ mod tests {
         let values = values(&["14:03"]);
         let mut canvas = Pixmap::new(400, config.border.width + config.bar.height).unwrap();
         let mut renderer = Renderer::new(None);
-        paint(&mut canvas, &config, &values, &mut renderer);
+        paint(&mut canvas, &config, &values, &mut renderer, 1.0);
 
         // Sample the background well clear of the text, then count what differs.
         let background = pixel(&canvas, canvas.width() / 2, canvas.height() - 2);

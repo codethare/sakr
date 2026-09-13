@@ -253,6 +253,52 @@ pub fn fill_round_rect(
     );
 }
 
+/// Fill a rectangle whose bottom corners are rounded and whose top corners are
+/// square.
+///
+/// Drawing the same translucent colour as a rounded rectangle plus a second
+/// rectangle to square its top would blend the overlap twice, leaving a strip
+/// that is more opaque than the rest.
+pub fn fill_rect_round_bottom(
+    pixmap: &mut Pixmap,
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    radius: f32,
+    color: Rgba,
+) {
+    if !drawable(width, height) {
+        return;
+    }
+    let radius = radius.min(width / 2.0).min(height);
+    if radius <= 0.0 {
+        fill_rect(pixmap, x, y, width, height, color);
+        return;
+    }
+
+    let (right, bottom) = (x + width, y + height);
+    let mut path = PathBuilder::new();
+    path.move_to(x, y);
+    path.line_to(right, y);
+    path.line_to(right, bottom - radius);
+    path.quad_to(right, bottom, right - radius, bottom);
+    path.line_to(x + radius, bottom);
+    path.quad_to(x, bottom, x, bottom - radius);
+    path.close();
+
+    let Some(path) = path.finish() else {
+        return;
+    };
+    pixmap.fill_path(
+        &path,
+        &paint(color),
+        FillRule::Winding,
+        Transform::identity(),
+        None,
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -333,6 +379,35 @@ mod tests {
             "half-transparent white over black should be ~0x80, got 0x{:02x}",
             blended.red()
         );
+    }
+
+    #[test]
+    fn a_bottom_rounded_rect_is_square_on_top_and_round_below() {
+        let mut canvas = pixmap(20, 20);
+        fill_rect_round_bottom(&mut canvas, 0.0, 0.0, 20.0, 20.0, 8.0, RED);
+
+        assert_eq!(px(&canvas, 0, 0).alpha(), 255, "the top-left corner stays square");
+        assert_eq!(px(&canvas, 19, 0).alpha(), 255, "the top-right corner stays square");
+        assert!(
+            px(&canvas, 0, 19).alpha() < 8,
+            "the bottom-left corner is rounded, got {}",
+            px(&canvas, 0, 19).alpha()
+        );
+        assert_eq!(px(&canvas, 10, 0).alpha(), 255);
+        assert_eq!(px(&canvas, 10, 19).alpha(), 255);
+    }
+
+    #[test]
+    fn a_translucent_shape_is_not_blended_with_itself() {
+        // Two passes of the same colour, as a rounded rect plus a squaring rect
+        // would be, would leave the overlap more opaque than the rest.
+        const HALF: Rgba = Rgba::new(0xff, 0xff, 0xff, 0x80);
+
+        let mut once = pixmap(20, 20);
+        fill_rect_round_bottom(&mut once, 0.0, 0.0, 20.0, 20.0, 8.0, HALF);
+
+        assert_eq!(px(&once, 10, 5).alpha(), 0x80, "a single pass keeps the alpha");
+        assert_eq!(px(&once, 10, 15).alpha(), 0x80);
     }
 
     #[test]
