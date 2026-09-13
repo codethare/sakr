@@ -61,7 +61,7 @@ pub enum Align {
 }
 
 /// A status-bar module backed by an external command.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct Module {
     pub name: String,
@@ -75,20 +75,6 @@ pub struct Module {
     pub color: Option<Rgba>,
     #[serde(flatten)]
     pub unknown: BTreeMap<String, toml::Value>,
-}
-
-impl Default for Module {
-    fn default() -> Self {
-        Self {
-            name: String::new(),
-            exec: String::new(),
-            interval: None,
-            stream: false,
-            align: Align::default(),
-            color: None,
-            unknown: BTreeMap::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

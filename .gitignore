@@ -6,6 +6,9 @@ pkg/
 *.rpm
 *.deb
 
+# ── Generated samples ────────────────────────────────────────
+preview-*.png
+
 # ── Environment / secrets ────────────────────────────────────
 .env
 .env.*
