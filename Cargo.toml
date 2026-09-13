@@ -1,0 +1,16 @@
+[package]
+name = "quickbar"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+calloop = "0.14"
+cosmic-text = "0.19"
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+smithay-client-toolkit = "0.21"
+tiny-skia = "0.11"
+toml = "1"
+wayland-client = "0.31"
+zbus = "5"
